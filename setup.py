@@ -27,16 +27,16 @@ def readme():
         return f.read()
 
 setup(
-    name='git-annex-remote-googledrive',
+    name='git-annex-remote-lotus-cli',
     version=versioneer.get_version(),
     cmdclass=versioneer.get_cmdclass(),
-    packages=['git_annex_remote_googledrive'],
-    description='git annex special remote for Google Drive',
+    packages=['git_annex_remote_lotus_cli'],
+    description='git annex special remote for Filecoin Lotus CLI',
     long_description=readme(),
     long_description_content_type='text/markdown',
-    url='https://github.com/Lykos153/git-annex-remote-googledrive',
-    author='Silvio Ankermann',
-    author_email='silvio@booq.org',
+    url='https://github.com/Lykos153/git-annex-remote-lotus-cli',
+    author='xloem',
+    author_email='0xloem@gmail.com',
     license='GPLv3',
     classifiers=[
         'Development Status :: 4 - Beta',
@@ -51,13 +51,12 @@ setup(
         'Programming Language :: Python :: 3.5',
         'Programming Language :: Python :: 3.6',
     ],
-    keywords='git-annex remote googledrive',
+    keywords='git-annex remote lotus filecoin',
     entry_points = {
-        'console_scripts': ['git-annex-remote-googledrive=git_annex_remote_googledrive.run:main'],
+        'console_scripts': ['git-annex-remote-lotus-cli=git_annex_remote_lotus_cli.run:main'],
     },
     install_requires=[
           'annexremote',
-          'drivelib>=0.1.4',
           'gitpython',
           'tenacity',
           'humanfriendly',
