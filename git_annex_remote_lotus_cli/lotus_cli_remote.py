@@ -413,8 +413,13 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
                 dealinfo = getdeal['DealInfo: ']
                 if dealinfo['DealID']:
                     break
-                dealstages = dealinfo['DealStages']['Stages']
-                dealstage = dealstages[-1]
+                dealstages = dealinfo['DealStages']
+                if dealstages:
+                    dealstages = dealstages['Stages']
+                if dealstages:
+                    dealstage = dealstages[-1]
+                else:
+                    dealstages = []
                 state = dealinfo['State']
                 msg = dealinfo['Message']
     
@@ -438,12 +443,12 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
                 if state == 26: # StorageDealError
                     raise RemoteError(msg)
     
-                if lastlog == lastlastlog:
+                if lastlog == lastlastlog and dealstages:
                     time.sleep(60)
     
                 # the transfer info is actually in the getdeal output, look at a completed deal to see
         except:
-            self._run('lotus', 'client', 'drop', importnum)
+            self._info(self._run('lotus', 'client', 'drop', importnum))
             self.annex.seturimissing(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
             raise
 
