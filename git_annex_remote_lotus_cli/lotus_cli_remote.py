@@ -113,8 +113,8 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
             #            " Default: {}".format(self.DEFAULT_CHUNKSIZE),
             #'mute-api-lockdown-warning':
             #            "Set to 'true' if you don't want to see the warning.",
-            'verified': "Set to 'true' if you want to use verified deals.",
-            'from': "Specify non-default address to fund deals with.",
+            'verified': "Set to 'true' or 'yes' if you want to use verified deals.",
+            'addr': "Specify non-default address to fund deals with.",
             'key': "Specify a private key to import to lotus to use.",
             'days': "How long the miner should store the data for in days. Usual range: 180 - 538",
             #'token':    "Token file that was created by `git-annex-remote-googledrive setup`",
@@ -191,7 +191,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         return self.annex.getcreds('wallet')
 
     @property
-    def from_addr(self):
+    def addr(self):
         return self._wallet['user']
 
     @property
@@ -266,7 +266,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
     @property
     def verified(self):
         if not hasattr(self, '_verified'):
-            self._verified = (self.annex.getconfig('verified') == 'true')
+            self._verified = (self.annex.getconfig('verified').lower() in ('true','yes','on'))
         return self._verified
 
     @property
@@ -326,10 +326,10 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         if not miner:
             raise RemoteError("Miner must be given.  Try `lotus client list-asks`.")
 
-        addr = self.annex.getconfig('from') or self.from_addr
+        addr = self.annex.getconfig('addr') or self.addr
         key = self.annex.getconfig('key') or self.key
-        self.annex.setconfig('from', None)
-        self.annex.setconfig('key', None)
+        self.annex.setconfig('addr', '')
+        self.annex.setconfig('key', '')
 
         if not key:
             if not addr:
@@ -395,12 +395,13 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         #fpath = Path(fpath)
         importnum, importcid = (item.split(' ')[1] for item in self._run('lotus', 'client', 'import', fpath).split(', '))
         self._info('Imported ' + fpath + ' as ' + str(importnum) + ' ' + importcid)
-        dealparams = ['lotus', 'client', 'deal', '--verified-deal=' + str(self.verified).lower()]
-        if self.from_addr:
-            dealparams.extend(('--from', self.from_addr))
-        dealparams.extend((importcid, self.miner, self.price_GiB, str(self.duration)))
 
-        dealcid = self._run(*dealparams)
+        dealcid = self._run(
+            'lotus', 'client', 'deal',
+            '--verified-deal=' + str(self.verified).lower(),
+            '--from', self.addr,
+            importcid, self.miner, self.price_GiB, str(self.duration)
+        )
         self.annex.seturipresent(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
 
         lastmsg = None
@@ -467,11 +468,18 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
                 tempfn = os.path.join(tempd, key)
     
                 retrparams = ['lotus', 'client', 'retrieve']
-                if self.from_addr:
-                    retrparams.extend(('--from', self.from_addr))
+                if self.addr:
+                    retrparams.extend(('--from', self.addr))
                 retrparams.extend(('--miner', self.miner, label, tempfn))
+
+                result = self._run(
+                    'lotus', 'client', 'retrieve',
+                    '--from', self.addr,
+                    '--miner', self.miner,
+                    label, tempfn
+                )
     
-                for line in self._run(*retrparams).split('\n'):
+                for line in result.split('\n'):
                     self._info(line)
     
                 os.rename(tempfn, fpath)
