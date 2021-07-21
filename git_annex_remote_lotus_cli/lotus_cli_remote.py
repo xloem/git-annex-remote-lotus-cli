@@ -393,56 +393,59 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
     @retry(**retry_conditions)
     def transfer_store(self, key, fpath):
         #fpath = Path(fpath)
-        importnum, importcid = (item.split(' ')[1] for item in self._run('lotus', 'client', 'import', fpath).split(', '))
-        self._info('Imported ' + fpath + ' as ' + str(importnum) + ' ' + importcid)
-
-        dealcid = self._run(
-            'lotus', 'client', 'deal',
-            '--verified-deal=' + str(self.verified).lower(),
-            '--from', self.addr,
-            importcid, self.miner, self.price_GiB, str(self.duration)
-        )
-        self.annex.seturipresent(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
-
-        lastmsg = None
-        lastlog = isoparse('0001-01-01T00:00:00Z')
-        lastlogmsg = None
-        while True:
-            getdeal = self._dealfromcid(key, dealcid, importnum)
-            dealinfo = getdeal['DealInfo: ']
-            if dealinfo['DealID']:
-                break
-            dealstages = dealinfo['DealStages']['Stages']
-            dealstage = dealstages[-1]
-            state = dealinfo['State']
-            msg = dealinfo['Message']
-
-            lastlastlog = lastlog
-            for stage in dealstages:
-                createdtime = isoparse(stage['CreatedTime'])
-                if createdtime > lastlog:
-                    self._info(stage['Name'] + ' ' + stage['Description'])
-                    lastlog = createdtime
-
-                updatedtime = isoparse(stage['UpdatedTime'])
-                if updatedtime > lastlog:
-                    for log  in stage['Logs']:
-                        updatedtime = isoparse(stage['UpdatedTime'])
-                        if updatedtime > lastlog:
-                            if log['Log'] != lastlogmsg:
-                                lastlogmsg = log['Log']
-                                self._info(log['Log'])
-                                lastlog = updatedtime
-
-            if state == 26: # StorageDealError
-                self._run('lotus', 'client', 'drop', importnum)
-                self.annex.seturimissing(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
-                raise RemoteError(msg)
-
-            if lastlog == lastlastlog:
-                time.sleep(60)
-
-            # the transfer info is actually in the getdeal output, look at a completed deal to see
+        try:
+            importnum, importcid = (item.split(' ')[1] for item in self._run('lotus', 'client', 'import', fpath).split(', '))
+            self._info('Imported ' + fpath + ' as ' + str(importnum) + ' ' + importcid)
+    
+            dealcid = self._run(
+                'lotus', 'client', 'deal',
+                '--verified-deal=' + str(self.verified).lower(),
+                '--from', self.addr,
+                importcid, self.miner, self.price_GiB, str(self.duration)
+            )
+            self.annex.seturipresent(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
+    
+            lastmsg = None
+            lastlog = isoparse('0001-01-01T00:00:00Z')
+            lastlogmsg = None
+            while True:
+                getdeal = self._dealfromcid(key, dealcid, importnum)
+                dealinfo = getdeal['DealInfo: ']
+                if dealinfo['DealID']:
+                    break
+                dealstages = dealinfo['DealStages']['Stages']
+                dealstage = dealstages[-1]
+                state = dealinfo['State']
+                msg = dealinfo['Message']
+    
+                lastlastlog = lastlog
+                for stage in dealstages:
+                    createdtime = isoparse(stage['CreatedTime'])
+                    if createdtime > lastlog:
+                        self._info(stage['Name'] + ' ' + stage['Description'])
+                        lastlog = createdtime
+    
+                    updatedtime = isoparse(stage['UpdatedTime'])
+                    if updatedtime > lastlog:
+                        for log  in stage['Logs']:
+                            updatedtime = isoparse(stage['UpdatedTime'])
+                            if updatedtime > lastlog:
+                                if log['Log'] != lastlogmsg:
+                                    lastlogmsg = log['Log']
+                                    self._info(log['Log'])
+                                    lastlog = updatedtime
+    
+                if state == 26: # StorageDealError
+                    raise RemoteError(msg)
+    
+                if lastlog == lastlastlog:
+                    time.sleep(60)
+    
+                # the transfer info is actually in the getdeal output, look at a completed deal to see
+        except:
+            self._run('lotus', 'client', 'drop', importnum)
+            self.annex.seturimissing(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
+            raise
 
     @send_version_on_error
     def claimurl(self, url):
