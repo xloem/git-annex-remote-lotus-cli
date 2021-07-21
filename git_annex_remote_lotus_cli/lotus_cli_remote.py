@@ -315,7 +315,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         #if not prefix and not root_id:
         #    raise RemoteError("Either prefix or root_id must be given.")
         if not miner:
-            raise RemoteError("Miner must be given.")
+            raise RemoteError("Miner must be given.  Try `lotus client list-asks`.")
 
         #token_config = self.annex.getconfig('token')
         #if token_config:
