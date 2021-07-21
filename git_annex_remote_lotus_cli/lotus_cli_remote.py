@@ -5,10 +5,10 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
 #
 
-import os, traceback, sys
+import os, traceback, subprocess, sys, time
 import json
-import subprocess
 from pathlib import Path
+from dateutil.parser import isoparse
 
 
 from . import __version__
@@ -76,7 +76,7 @@ def send_version_on_error(f):
 def run(*params, input=None):
     proc = subprocess.run(params, capture_output = True, input = input)
     proc.check_returncode()
-    return proc.stdout.decode().strip()
+    return (proc.stdout.decode() + proc.stderr.decode()).strip()
 
 class LotusCliRemote(annexremote.ExportRemote):
 
@@ -191,8 +191,9 @@ class LotusCliRemote(annexremote.ExportRemote):
         if not hasattr(self, '_duration'):
             days = self.annex.getconfig('days')
             if not days:
-                #self._duration = 518400 # minimum
-                self._duration = 530 * 24 * 60 * 2
+                #self._duration = 518400 # minimum, 180 days
+                #self._duration = 1555200 # maximum, 540 days
+                self._duration = 530 * 24 * 60 * 2 # 530 days
             else:
                 self._duration = days * 24 * 60 * 2
         return self._duration
@@ -253,7 +254,7 @@ class LotusCliRemote(annexremote.ExportRemote):
     @property
     def verified(self):
         if not hasattr(self, '_verified'):
-            self._verified = self.annex.getconfig('verified') == 'true'
+            self._verified = (self.annex.getconfig('verified') == 'true')
         return self._verified
 
     @property
@@ -262,7 +263,7 @@ class LotusCliRemote(annexremote.ExportRemote):
             lines = run('lotus', 'client', 'query-ask', self.miner).split('\n')
             values = [line.split(': ')[1] for line in lines]
             if len(values) != 5 or values[0] != self.miner:
-                raise Exception('unexpected ask output', *lines)
+                raise RemoteError('unexpected ask output', *lines)
             self._ask = {
                 'ask': values[0],
                 'unverified_price': values[1],
@@ -271,6 +272,10 @@ class LotusCliRemote(annexremote.ExportRemote):
                 'minsize': humanfriendly.parse_size(values[4])
             }
         return self._ask
+
+    @property
+    def price_GiB(self):
+        return self.ask['verified_price' if self.verified else 'unverified_price']
 
     @property
     def minsize(self):
@@ -350,123 +355,194 @@ class LotusCliRemote(annexremote.ExportRemote):
     @retry(**retry_conditions)
     def transfer_store(self, key, fpath):
         #fpath = Path(fpath)
-        cid = run('lotus', 'client', 'import', '--quiet', fpath)
-        logging.debug("Imported %s as %s", fpath, cid)
-        #new_path = self.local_appdir / self.uuid / "tmp" / key
-        #if new_path.exists():
-        #    logging.debug("Found key in appdir: %s", str(new_path))
-        #    upload_path = new_path
-        #elif self.encryption != "none":
-        #    logging.debug("Encrypted remote. Moving key to %s", str(new_path))
-        #    new_path.parent.mkdir(parents=True, exist_ok=True)
-        #    fpath.rename(new_path)
-        #    upload_path = new_path
-        #else:
-        #    upload_path = fpath
+        importnum, importcid = (item.split(' ')[1] for item in run('lotus', 'client', 'import', fpath).split(', '))
+        logging.debug("Imported %s as %s %s", fpath, importnum, importcid)
         dealparams = ['lotus', 'client', 'deal']
         if self.verified:
             dealparams.append('--verified-deal')
         if self.from_addr:
             dealparams.extend(('--from', self.from_addr))
-        dealparams.extend((cid, self.miner, self.duration))
+        dealparams.extend((cid, self.miner, self.price_per_GiB, self.duration))
 
-        output = run(*dealparams)
+        dealcid = run(*dealparams)
+        self.seturipresent(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
 
-        #def try_upload():
-        #    self.root.new_key(key).upload(
-        #                    str(upload_path), 
-        #                    chunksize=self.chunksize,
-        #                    progress_handler=self.annex.progress)
+        lastmsg = None
+        lastlog = isoparse('0001-01-01T00:00:00Z')
+        while True:
+            getdeal = self._dealfromcid(dealcid, importnum)
+            dealinfo = getdeal['DealInfo: ']
+            if dealinfo['DealID']:
+                break
+            dealstages = dealinfo['DealStages']['Stages']
+            dealstage = dealstages[-1]
+            state = dealinfo['State']
+            msg = dealinfo['Message']
 
+            lastlastlog = lastlog
+            for stage in dealstages:
+                createdtime = isoparse(stage['CreatedTime'])
+                if createdtime > lastlog:
+                    self._info(stage['Name'] + ' ' + stage['Description'])
+                    lastlog = createdtime
 
-        #try:
-        #    try_upload()
-        #except NumberOfChildrenExceededError:
-        #    self.root.handle_full_folder()
-        #    try_upload()
+                updatedtime = isoparse(stage['UpdatedTime'])
+                if updatedtime > lastlog:
+                    for log  in stage['Logs']:
+                        updatedtime = isoparse(stage['UpdatedTime'])
+                        if updatedtime > lastlog:
+                            self._info(log['Log'])
+                            lastlog = updatedtime
 
-        
+            if state == 26: # StorageDealError
+                run('lotus', 'client', 'drop', importnum)
+                self.seturimissing(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
+                raise RemoteError(msg)
 
-        #new_path.unlink(missing_ok=True)
+            if lastlog == lastlastlog:
+                time.sleep(60)
+
+            # the transfer info is actually in the getdeal output, look at a completed deal to see
+
+    @send_version_on_error
+    def claimurl(self, url):
+        proto = 'filecoin://' + self.miner + '/'
+        protolen = len(proto)
+        return len(url) > protolen and url[:protolen] == proto
 
     @send_version_on_error
     @retry(**retry_conditions)
     def transfer_retrieve(self, key, fpath):
-        self.root.get_key(key).download(
-                    fpath, 
-                    chunksize=self.chunksize,
-                    progress_handler=self.annex.progress)
+        # can also retrieve from local
+        for url in self.geturls(key, 'filecoin://' + self.miner + '/onchain/':
+            dealcid, state, id = url.split('/')[3:]
+            deal = json.loads(run('lotus', 'state', 'get-deal', id))
+            proposal = deal['Proposal']
+            label = proposal['Label']
+
+            retrparams = ['lotus', 'client', 'retrieve']
+            if self.from_addr:
+                retrparams.extend(('--from', self.from_addr))
+            retrparams.extend(('--miner', self.miner, label, fpath))
+
+            for line in run(*retrparams).split('\n'):
+                self._info(line)
     
     @send_version_on_error
     @retry(**retry_conditions)
     def checkpresent(self, key):
-        try:
-            self.root.get_key(key)
-            return True
-        except FileNotFoundError:
-            return False
+        results = []
+        for url in self.geturls(key, 'filecoin://' + self.miner + '/':
+            dealcid, state, id = url.split('/')[3:]
+            if state == 'onchain':
+                try:
+                    deal = json.loads(run('lotus', 'state', 'get-deal', id))
+                except subprocess.CalledProcessError as err:
+                    self._info(err.stdout.decode())
+                    self._info(err.stderr.decode())
+                    #self.seturimissing('deal') should be url not 'deal'
+                    continue
+                proposal = deal['Proposal']
+                provider = proposal['Provider']
+                if provider != self.miner:
+                    continue
+                startepoch = proposal['StartEpoch']
+                endepoch = proposal['EndEpoch']
+                epoch = run('lotus', 'chain', 'list', '--count', 1).split(':')[0]
+                epoch = int(epoch)
+                if (startepoch + endepoch) / 2 > epoch:
+                    results.append({
+                        'url': url,
+                        'size': proposal['PieceSize'],
+                        'filename': proposal['Label']
+                    })
+            elif state == 'import':
+                deal = self._dealfromcid(dealcid, id)
+                dealinfo = deal['DealInfo: ']
+                if dealinfo['DealID'] and dealinfo['Provider'] == self.miner:
+                    results.append({
+                        'url': url,
+                        'size': deal['OnChain']['Proposal']['PieceSize']
+                    })
+        return results
 
-    @send_version_on_error
-    @retry(**retry_conditions)
-    def remove(self, key):
-        self.root.delete_key(key)
+    def _dealfromcid(self, dealcid, importnum):
+        deal = json.loads(run(('lotus', 'client', 'get-deal', dealcid)))
+        dealinfo = deal['DealInfo: ']
+        if dealinfo['DealID']:
+            dealid = dealinfo['DealID']
+            provider = dealinfo['Provider']
+            #label = getdeal['OnChain']['Proposal']['Label']
+            self.seturipresent(key, 'filecoin://' + provider + '/' + dealcid + '/onchain/' + dealid)
+            try:
+                run('lotus', 'client', 'drop', importnum)
+            except:
+                pass
+            self.seturimissing(key, 'filecoin://' + provider + '/' + dealcid + '/import/' + importnum)
+        return deal
 
-    @send_version_on_error
-    @retry(**retry_conditions)
-    def transferexport_store(self, key, fpath, name):
-        #TODO: if file already exists, compare md5sum
-        self.root.new_key(key, name).upload(
-                fpath,
-                chunksize=self.chunksize,
-                progress_handler=self.annex.progress
-        )
 
-    @send_version_on_error
-    @retry(**retry_conditions)
-    def transferexport_retrieve(self, key, fpath, name):
-        self.root.get_key(key, name).download(
-            fpath,
-            chunksize=self.chunksize,
-            progress_handler=self.annex.progress
-        )
+    #@send_version_on_error
+    #@retry(**retry_conditions)
+    #def remove(self, key):
+    #    self.root.delete_key(key)
 
-    @send_version_on_error
-    @retry(**retry_conditions)
-    def checkpresentexport(self, key, name):
-        try:
-            self.root.get_key(key, name)
-            return True
-        except FileNotFoundError:
-            return False
+    #@send_version_on_error
+    #@retry(**retry_conditions)
+    #def transferexport_store(self, key, fpath, name):
+    #    #TODO: if file already exists, compare md5sum
+    #    self.root.new_key(key, name).upload(
+    #            fpath,
+    #            chunksize=self.chunksize,
+    #            progress_handler=self.annex.progress
+    #    )
 
-    @send_version_on_error
-    @retry(**retry_conditions)
-    def removeexport(self, key, name):
-        self.root.delete_key(key, name)
+    #@send_version_on_error
+    #@retry(**retry_conditions)
+    #def transferexport_retrieve(self, key, fpath, name):
+    #    self.root.get_key(key, name).download(
+    #        fpath,
+    #        chunksize=self.chunksize,
+    #        progress_handler=self.annex.progress
+    #    )
 
-    @send_version_on_error
-    @retry(**retry_conditions)
-    def removeexportdirectory(self, directory):
-        try:
-            self.root.delete_dir(directory)
-        except NotADirectoryError:
-            raise RemoteError("{} is a file. Not deleting".format(directory))
+    #@send_version_on_error
+    #@retry(**retry_conditions)
+    #def checkpresentexport(self, key, name):
+    #    try:
+    #        self.root.get_key(key, name)
+    #        return True
+    #    except FileNotFoundError:
+    #        return False
 
-    @send_version_on_error
-    @retry(**retry_conditions)
-    def renameexport(self, key, name, new_name):
-        self.root.rename_key(key, name, new_name)
-            
-    def _splitpath(self, filename):
-        splitpath = filename.rsplit('/', 1)
-        exportfile = dict()
-        if len(splitpath) == 2:
-            exportfile['path'] = splitpath[0]
-            exportfile['filename'] = splitpath[1]
-        else:
-            exportfile['path'] = ''
-            exportfile['filename'] = splitpath[0]
-        return exportfile
+    #@send_version_on_error
+    #@retry(**retry_conditions)
+    #def removeexport(self, key, name):
+    #    self.root.delete_key(key, name)
+
+    #@send_version_on_error
+    #@retry(**retry_conditions)
+    #def removeexportdirectory(self, directory):
+    #    try:
+    #        self.root.delete_dir(directory)
+    #    except NotADirectoryError:
+    #        raise RemoteError("{} is a file. Not deleting".format(directory))
+
+    #@send_version_on_error
+    #@retry(**retry_conditions)
+    #def renameexport(self, key, name, new_name):
+    #    self.root.rename_key(key, name, new_name)
+    #        
+    #def _splitpath(self, filename):
+    #    splitpath = filename.rsplit('/', 1)
+    #    exportfile = dict()
+    #    if len(splitpath) == 2:
+    #        exportfile['path'] = splitpath[0]
+    #        exportfile['filename'] = splitpath[1]
+    #    else:
+    #        exportfile['path'] = ''
+    #        exportfile['filename'] = splitpath[0]
+    #    return exportfile
             
     def _send_version(self):
         global __version__
