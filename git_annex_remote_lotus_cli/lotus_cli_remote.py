@@ -15,7 +15,7 @@ from . import __version__
 from . import __name__ as MODULENAME
 from annexremote import __version__ as annexremote_version
 #from drivelib import __version__ as drivelib_version
-from . import _default_client_id as DEFAULT_CLIENT_ID
+#from . import _default_client_id as DEFAULT_CLIENT_ID
 
 
 #from drivelib import GoogleDrive
@@ -35,10 +35,10 @@ from . import _default_client_id as DEFAULT_CLIENT_ID
 
 from functools import wraps
 
-#from tenacity import Retrying, retry
-#from tenacity import retry_if_exception_type
-#from tenacity import wait_exponential, wait_fixed
-#from tenacity import stop_after_attempt
+from tenacity import Retrying, retry
+from tenacity import retry_if_exception_type
+from tenacity import wait_exponential, wait_fixed
+from tenacity import stop_after_attempt
 
 import annexremote
 from annexremote import RemoteError
@@ -55,7 +55,7 @@ def NotAFolderError(Exception):
 retry_conditions = {
         'wait': wait_exponential(multiplier=1, max=10),
         'retry': (
-            retry_if_exception_type(HttpError) |
+#            retry_if_exception_type(HttpError) |
             retry_if_exception_type(ConnectionResetError)
         ),
         'stop': stop_after_attempt(5),
@@ -78,7 +78,7 @@ def run(*params, input=None):
     proc.check_returncode()
     return (proc.stdout.decode() + proc.stderr.decode()).strip()
 
-class LotusCliRemote(annexremote.ExportRemote):
+class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
 
     def __init__(self, annex):
         super().__init__(annex)
@@ -356,14 +356,14 @@ class LotusCliRemote(annexremote.ExportRemote):
     def transfer_store(self, key, fpath):
         #fpath = Path(fpath)
         importnum, importcid = (item.split(' ')[1] for item in run('lotus', 'client', 'import', fpath).split(', '))
-        logging.debug("Imported %s as %s %s", fpath, importnum, importcid)
+        self._info('Imported ' + fpath + ' as ' + str(importnum) + ' ' + importcid)
         dealparams = ['lotus', 'client', 'deal', '--verified-deal=' + str(self.verified).lower()]
         if self.from_addr:
             dealparams.extend(('--from', self.from_addr))
-        dealparams.extend((cid, self.miner, self.price_per_GiB, self.duration))
+        dealparams.extend((importcid, self.miner, self.price_GiB, str(self.duration)))
 
         dealcid = run(*dealparams)
-        self.seturipresent(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
+        self.annex.seturipresent(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
 
         lastmsg = None
         lastlog = isoparse('0001-01-01T00:00:00Z')
@@ -394,7 +394,7 @@ class LotusCliRemote(annexremote.ExportRemote):
 
             if state == 26: # StorageDealError
                 run('lotus', 'client', 'drop', importnum)
-                self.seturimissing(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
+                self.annex.seturimissing(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
                 raise RemoteError(msg)
 
             if lastlog == lastlastlog:
@@ -412,7 +412,7 @@ class LotusCliRemote(annexremote.ExportRemote):
     @retry(**retry_conditions)
     def transfer_retrieve(self, key, fpath):
         # can also retrieve from local
-        for url in self.geturls(key, 'filecoin://' + self.miner + '/onchain/':
+        for url in self.annex.geturls(key, 'filecoin://' + self.miner + '/onchain/'):
             dealcid, state, id = url.split('/')[3:]
             deal = json.loads(run('lotus', 'state', 'get-deal', id))
             proposal = deal['Proposal']
@@ -430,7 +430,7 @@ class LotusCliRemote(annexremote.ExportRemote):
     @retry(**retry_conditions)
     def checkpresent(self, key):
         results = []
-        for url in self.geturls(key, 'filecoin://' + self.miner + '/':
+        for url in self.annex.geturls(key, 'filecoin://' + self.miner + '/'):
             dealcid, state, id = url.split('/')[3:]
             if state == 'onchain':
                 try:
@@ -438,7 +438,7 @@ class LotusCliRemote(annexremote.ExportRemote):
                 except subprocess.CalledProcessError as err:
                     self._info(err.stdout.decode())
                     self._info(err.stderr.decode())
-                    #self.seturimissing('deal') should be url not 'deal'
+                    #self.annex.seturimissing('deal') should be url not 'deal'
                     continue
                 proposal = deal['Proposal']
                 provider = proposal['Provider']
@@ -465,24 +465,30 @@ class LotusCliRemote(annexremote.ExportRemote):
         return results
 
     def _dealfromcid(self, dealcid, importnum):
-        deal = json.loads(run(('lotus', 'client', 'get-deal', dealcid)))
+        deal = json.loads(run('lotus', 'client', 'get-deal', dealcid))
         dealinfo = deal['DealInfo: ']
         if dealinfo['DealID']:
             dealid = dealinfo['DealID']
             provider = dealinfo['Provider']
             #label = getdeal['OnChain']['Proposal']['Label']
-            self.seturipresent(key, 'filecoin://' + provider + '/' + dealcid + '/onchain/' + dealid)
+            self.annex.seturipresent(key, 'filecoin://' + provider + '/' + dealcid + '/onchain/' + dealid)
             try:
                 run('lotus', 'client', 'drop', importnum)
             except:
                 pass
-            self.seturimissing(key, 'filecoin://' + provider + '/' + dealcid + '/import/' + importnum)
+            self.annex.seturimissing(key, 'filecoin://' + provider + '/' + dealcid + '/import/' + importnum)
         return deal
 
 
-    #@send_version_on_error
-    #@retry(**retry_conditions)
-    #def remove(self, key):
+    @send_version_on_error
+    @retry(**retry_conditions)
+    def remove(self, key):
+        for url in self.annex.geturls(key, 'filecoin://' + self.miner + '/'):
+            dealcid, state, id = url.split('/')[3:]
+            if state == 'import':
+                run('lotus', 'client', 'drop', importnum)
+            self.annex.seturimissing(url)
+
     #    self.root.delete_key(key)
 
     #@send_version_on_error
@@ -545,13 +551,14 @@ class LotusCliRemote(annexremote.ExportRemote):
     def _send_version(self):
         global __version__
         global annexremote_version
-        global drivelib_version
+        #global drivelib_version
         self.annex.debug("Running {} version {}".format(
                             MODULENAME,
                             __version__
                         ))
         self.annex.debug("Using AnnexRemote version", annexremote_version)
-        self.annex.debug("Using Drivelib version", drivelib_version)
+        #self.annex.debug("Using Drivelib version", drivelib_version)
+        self.annex.debug('Using client', run('lotus', '--version'))
     
     def _info(self, message):
         try:

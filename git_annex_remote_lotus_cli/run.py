@@ -21,11 +21,11 @@ from annexremote import Master
 from annexremote import __version__ as annexremote_version
 #from drivelib import __version__ as drivelib_version
 #from drivelib import GoogleDrive
-from .lotus_cli_Remote import LotusCliRemote
+from .lotus_cli_remote import LotusCliRemote
 from . import __version__
 from . import __name__ as MODULENAME
-from . import _default_client_id as DEFAULT_CLIENT_ID
-from . import _default_client_secret as DEFAULT_CLIENT_SECRET
+#from . import _default_client_id as DEFAULT_CLIENT_ID
+#from . import _default_client_secret as DEFAULT_CLIENT_SECRET
 
 class bcolors:
     HEADER = '\033[95m'
