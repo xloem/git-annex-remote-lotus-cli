@@ -357,9 +357,7 @@ class LotusCliRemote(annexremote.ExportRemote):
         #fpath = Path(fpath)
         importnum, importcid = (item.split(' ')[1] for item in run('lotus', 'client', 'import', fpath).split(', '))
         logging.debug("Imported %s as %s %s", fpath, importnum, importcid)
-        dealparams = ['lotus', 'client', 'deal']
-        if self.verified:
-            dealparams.append('--verified-deal')
+        dealparams = ['lotus', 'client', 'deal', '--verified-deal=' + str(self.verified).lower()]
         if self.from_addr:
             dealparams.extend(('--from', self.from_addr))
         dealparams.extend((cid, self.miner, self.price_per_GiB, self.duration))
