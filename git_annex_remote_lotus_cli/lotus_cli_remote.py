@@ -76,6 +76,8 @@ def send_version_on_error(f):
 class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
 
     def _run(self, *params, input=None):
+        if type(input) is not bytes:
+            input = bytes(str(input) + '\n', 'utf-8')
         proc = subprocess.run(params, capture_output = True, input = input)
         if proc.returncode:
             for line in (proc.stdout + proc.stderr).decode().strip().split('\n'):
@@ -111,7 +113,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
             #            " Default: {}".format(self.DEFAULT_CHUNKSIZE),
             #'mute-api-lockdown-warning':
             #            "Set to 'true' if you don't want to see the warning.",
-            'verified': "Set to 'true' if you want to always use verified deals.",
+            'verified': "Set to 'true' if you want to use verified deals.",
             'from': "Specify non-default address to fund deals with.",
             'key': "Specify a private key to import to lotus to use.",
             'days': "How long the miner should store the data for in days. Usual range: 180 - 538",
@@ -326,8 +328,8 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
 
         addr = self.annex.getconfig('from') or self.from_addr
         key = self.annex.getconfig('key') or self.key
-        self.setconfig('from', None)
-        self.setconfig('key', None)
+        self.annex.setconfig('from', None)
+        self.annex.setconfig('key', None)
 
         if not key:
             if not addr:
@@ -337,10 +339,18 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         walletaddrs = self._run('lotus', 'wallet', 'list', '--addr-only').split('\n')
 
         if not addr or addr not in walletaddrs:
-            addr = self._run('lotus', 'wallet', 'import', input = key)
-            addr = (word for word in result.split(' ') if word[0] == 'f' and len(word) == 41)[0]
+            try:
+                addr = self._run('lotus', 'wallet', 'import', input = key)
+            except subprocess.CalledProcessError as err:
+                addr = (err.stdout + err.stderr).decode()
+                addr = addr.replace('-', ' ')
+                addr = addr.replace('\'', ' ')
+            for word in addr.split(' '):
+                if len(word) == 41 and word[0] == 'f':
+                    addr = word
+                    break
 
-        self.setcreds('wallet', addr, key)
+        self.annex.setcreds('wallet', addr, key)
 
         #token_config = self.annex.getconfig('token')
         #if token_config:
