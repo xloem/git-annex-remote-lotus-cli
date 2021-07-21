@@ -113,6 +113,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
             #            "Set to 'true' if you don't want to see the warning.",
             'verified': "Set to 'true' if you want to always use verified deals.",
             'from': "Specify non-default address to fund deals with.",
+            'key': "Specify a private key to import to lotus to use.",
             'days': "How long the miner should store the data for in days. Usual range: 180 - 538",
             #'token':    "Token file that was created by `git-annex-remote-googledrive setup`",
             #'auto_fix_full':    "`yes` if the remote should try to fix full-folder issues"
@@ -184,10 +185,16 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         return self._miner
 
     @property
+    def _wallet(self):
+        return self.annex.getcreds('wallet')
+
+    @property
     def from_addr(self):
-        if not hasattr(self, '_from'):
-            self._from = self.annex.getconfig('from')
-        return self._from
+        return self._wallet['user']
+
+    @property
+    def key(self):
+        return self._wallet['password']
 
     @property
     def duration(self):
@@ -316,6 +323,24 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         #    raise RemoteError("Either prefix or root_id must be given.")
         if not miner:
             raise RemoteError("Miner must be given.  Try `lotus client list-asks`.")
+
+        addr = self.annex.getconfig('from') or self.from_addr
+        key = self.annex.getconfig('key') or self.key
+        self.setconfig('from', None)
+        self.setconfig('key', None)
+
+        if not key:
+            if not addr:
+                addr = self._run('lotus', 'wallet', 'default')
+            key = self._run('lotus', 'wallet', 'export', addr)
+
+        walletaddrs = self._run('lotus', 'wallet', 'list', '--addr-only').split('\n')
+
+        if not addr or addr not in walletaddrs:
+            addr = self._run('lotus', 'wallet', 'import', input = key)
+            addr = (word for word in result.split(' ') if word[0] == 'f' and len(word) == 41)[0]
+
+        self.setcreds('wallet', addr, key)
 
         #token_config = self.annex.getconfig('token')
         #if token_config:
