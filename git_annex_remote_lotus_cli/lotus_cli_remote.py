@@ -403,6 +403,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
                 ).split(', '))
             self._info('Imported as ' + importnum + ' ' + datacid)
     
+            self._info('Opening a deal for ' + self.price_GiB + ' / GiB, ' + str(self.duration) + ' epochs ...')
             dealcid = self._run(
                 'lotus', 'client', 'deal',
                 '--verified-deal=' + str(self.verified).lower(),
