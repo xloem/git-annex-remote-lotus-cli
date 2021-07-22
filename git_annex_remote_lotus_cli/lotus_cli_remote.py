@@ -18,6 +18,7 @@ from annexremote import __version__ as annexremote_version
 #from . import _default_client_id as DEFAULT_CLIENT_ID
 
 
+import multibase
 #from drivelib import GoogleDrive
 #from drivelib import Credentials
 #from drivelib.errors import NumberOfChildrenExceededError
@@ -398,16 +399,31 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
             self._info('Importing ' + key + ' ...')
             importnum, datacid = (item.split(' ')[1] for item in self._run(
                     'lotus', 'client', 'import',
-                    '--cid-base=base64',
+                    '--cid-base=base64url',
                     fpath
                 ).split(', '))
+
             self._info('Imported as ' + importnum + ' ' + datacid)
-    
-            self._info('Opening a deal for ' + self.price_GiB + ' / GiB, ' + str(self.duration) + ' epochs ...')
+
+            stat = self._run('lotus', 'client', 'stat', datacid).split('\n')
+            piece_size, payload_size = [line.split(':', 1)[1] for line in stat]
+
+            total_price, total_units = self.price_GiB.split(' ')
+            total_price = (
+                    float(total_price) *
+                    self.duration *
+                    humanfriendly.parse_size(piece_size) / 1024 / 1024 / 1024
+                )
+
+            self._info('Piece size = ' + piece_size.strip() +
+                       '  Duration = ' + str(self.duration / 24 / 60 / 2) + ' days' +
+                       '  Price = ' + str(total_price) + ' ' + total_units)
+            
+            self._info('Opening a deal ...')
             dealcid = self._run(
                 'lotus', 'client', 'deal',
                 '--verified-deal=' + str(self.verified).lower(),
-                '--cid-base=base64',
+                '--cid-base=base64url',
                 '--from', self.addr,
                 datacid, self.miner, self.price_GiB, str(self.duration)
             )
@@ -457,6 +473,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
                 # the transfer info is actually in the getdeal output, look at a completed deal to see
         except:
             if importnum is not None:
+                self._info('Unimporting ' + importnum + '.')
                 self._info(self._run('lotus', 'client', 'drop', importnum))
             if dealcid is not None:
                 self.annex.seturimissing(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
@@ -566,10 +583,12 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
     @retry(**retry_conditions)
     def remove(self, key):
         for url in self.annex.geturls(key, 'filecoin://' + self.miner + '/'):
-            dealcid, state, id = url.split('/')[3:]
-            if state == 'import':
-                self._run('lotus', 'client', 'drop', id)
-            self.annex.seturimissing(url)
+            try:
+                dealcid, state, id = url.split('/')[3:]
+                if state == 'import':
+                    self._run('lotus', 'client', 'drop', id)
+            finally:
+                self.annex.seturimissing(key, url)
 
     #    self.root.delete_key(key)
 

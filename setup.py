@@ -60,5 +60,6 @@ setup(
           'gitpython',
           'tenacity',
           'humanfriendly',
+          'py-multibase',
       ],
 )
