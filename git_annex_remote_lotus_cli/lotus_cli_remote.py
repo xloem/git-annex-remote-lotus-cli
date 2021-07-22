@@ -393,8 +393,13 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
     @retry(**retry_conditions)
     def transfer_store(self, key, fpath):
         #fpath = Path(fpath)
+        dealcid = None
         try:
-            importnum, importcid = (item.split(' ')[1] for item in self._run('lotus', 'client', 'import', fpath).split(', '))
+            importnum, importcid = (item.split(' ')[1] for item in self._run(
+                    'lotus', 'client', 'import',
+                    '--cid-base=base64',
+                    fpath
+                ).split(', '))
             self._info('Imported ' + fpath + ' as ' + str(importnum) + ' ' + importcid)
     
             dealcid = self._run(
@@ -449,7 +454,8 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
                 # the transfer info is actually in the getdeal output, look at a completed deal to see
         except:
             self._info(self._run('lotus', 'client', 'drop', importnum))
-            self.annex.seturimissing(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
+            if dealcid is not None:
+                self.annex.seturimissing(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
             raise
 
     @send_version_on_error
