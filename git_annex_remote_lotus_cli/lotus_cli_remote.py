@@ -5,7 +5,7 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
 #
 
-import os, traceback, subprocess, sys, time, tempfile
+import os, decimal, traceback, subprocess, sys, time, tempfile
 import json
 from pathlib import Path
 from dateutil.parser import isoparse
@@ -206,9 +206,9 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
             if not days:
                 #self._duration = 518400 # minimum, 180 days
                 #self._duration = 1555200 # maximum, 540 days
-                self._duration = 530 * 24 * 60 * 2 # 530 days
+                self._duration = decimal.Decimal(530 * 24 * 60 * 2) # 530 days
             else:
-                self._duration = days * 24 * 60 * 2
+                self._duration = decimal.Decimal(days) * 24 * 60 * 2
         return self._duration
 
     #@property
@@ -410,7 +410,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
 
             total_price, total_units = self.price_GiB.split(' ')
             total_price = (
-                    float(total_price) *
+                    decimal.Decimal(total_price) *
                     self.duration *
                     humanfriendly.parse_size(piece_size) / 1024 / 1024 / 1024
                 )
@@ -427,57 +427,58 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
                 '--from', self.addr,
                 datacid, self.miner, self.price_GiB, str(self.duration)
             )
-            self.annex.seturipresent(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
-    
-            lastmsg = None
-            lastlog = isoparse('0001-01-01T00:00:00Z')
-            lastlogmsg = None
-            while True:
-                getdeal = self._dealfromcid(key, dealcid, importnum)
-                dealinfo = getdeal['DealInfo: ']
-                if dealinfo['DealID']:
-                    break
-                dealstages = dealinfo['DealStages']
-                if dealstages:
-                    dealstages = dealstages['Stages']
-                if dealstages:
-                    dealstage = dealstages[-1]
-                else:
-                    dealstages = []
-                state = dealinfo['State']
-                msg = dealinfo['Message']
-    
-                lastlastlog = lastlog
-                for stage in dealstages:
-                    createdtime = isoparse(stage['CreatedTime'])
-                    if createdtime > lastlog:
-                        self._info(stage['Name'] + ' ' + stage['Description'])
-                        lastlog = createdtime
-    
-                    updatedtime = isoparse(stage['UpdatedTime'])
-                    if updatedtime > lastlog:
-                        for log  in stage['Logs']:
-                            updatedtime = isoparse(stage['UpdatedTime'])
-                            if updatedtime > lastlog:
-                                if log['Log'] != lastlogmsg:
-                                    lastlogmsg = log['Log']
-                                    self._info(log['Log'])
-                                    lastlog = updatedtime
-    
-                if state == 26: # StorageDealError
-                    raise RemoteError(msg)
-    
-                if lastlog == lastlastlog and dealstages:
-                    time.sleep(60)
-    
-                # the transfer info is actually in the getdeal output, look at a completed deal to see
+            self.annex.seturipresent(key, 'filecoin://' + self.miner + '/' + datacid + '/' + dealcid + '/import/' + importnum)
         except:
             if importnum is not None:
                 self._info('Unimporting ' + importnum + '.')
                 self._info(self._run('lotus', 'client', 'drop', importnum))
-            if dealcid is not None:
-                self.annex.seturimissing(key, 'filecoin://' + self.miner + '/' + dealcid + '/import/' + importnum)
             raise
+    
+        lastmsg = None
+        lastlog = isoparse('0001-01-01T00:00:00Z')
+        lastlogmsg = None
+        while True:
+            getdeal = self._dealfromcid(key, dealcid, importnum)
+            dealinfo = getdeal['DealInfo: ']
+            if dealinfo['DealID']:
+                break
+            dealstages = dealinfo['DealStages']
+            if dealstages:
+                dealstages = dealstages['Stages']
+            if dealstages:
+                dealstage = dealstages[-1]
+            else:
+                dealstages = []
+            state = dealinfo['State']
+            msg = dealinfo['Message']
+    
+            lastlastlog = lastlog
+            for stage in dealstages:
+                createdtime = isoparse(stage['CreatedTime'])
+                if createdtime > lastlog:
+                    self._info(stage['Name'] + ' ' + stage['Description'])
+                    lastlog = createdtime
+    
+                updatedtime = isoparse(stage['UpdatedTime'])
+                if updatedtime > lastlog:
+                    for log  in stage['Logs']:
+                        updatedtime = isoparse(stage['UpdatedTime'])
+                        if updatedtime > lastlog:
+                            if log['Log'] != lastlogmsg:
+                                lastlogmsg = log['Log']
+                                self._info(log['Log'])
+                                lastlog = updatedtime
+    
+            if state == 26: # StorageDealError
+                self.annex.seturimissing(key, 'filecoin://' + self.miner + '/' + datacid + '/' + dealcid + '/import/' + importnum)
+                self._info('Unimporting ' + importnum + '.')
+                self._info(self._run('lotus', 'client', 'drop', importnum))
+                raise RemoteError(msg)
+    
+            if lastlog == lastlastlog and dealstages:
+                time.sleep(60)
+    
+            # the transfer info is actually in the getdeal output, look at a completed deal to see
 
     @send_version_on_error
     def claimurl(self, url):
@@ -490,7 +491,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
     def transfer_retrieve(self, key, fpath):
         # can also retrieve from local
         for url in self.annex.geturls(key, 'filecoin://' + self.miner + '/'):
-            dealcid, state, id = url.split('/')[3:]
+            dealcid, state, id = url.split('/')[-3:]
             if state != 'onchain':
                 continue
             deal = json.loads(self._run('lotus', 'state', 'get-deal', id))
@@ -530,7 +531,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
     def checkpresent(self, key):
         results = []
         for url in self.annex.geturls(key, 'filecoin://' + self.miner + '/'):
-            dealcid, state, id = url.split('/')[3:]
+            dealcid, state, id = url.split('/')[-3:]
             if state == 'onchain':
                 try:
                     deal = json.loads(self._run('lotus', 'state', 'get-deal', id))
@@ -569,13 +570,14 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         if dealinfo['DealID']:
             dealid = dealinfo['DealID']
             provider = dealinfo['Provider']
-            #label = getdeal['OnChain']['Proposal']['Label']
-            self.annex.seturipresent(key, 'filecoin://' + provider + '/' + dealcid + '/onchain/' + str(dealid))
+            datacid = getdeal['OnChain']['Proposal']['Label']
+            datacid = multibase.encode('base64url', multibase.decode(label))
+            self.annex.seturipresent(key, 'filecoin://' + provider + '/' + datacid + '/' + dealcid + '/onchain/' + str(dealid))
             try:
                 self._run('lotus', 'client', 'drop', str(importnum))
             except:
                 pass
-            self.annex.seturimissing(key, 'filecoin://' + provider + '/' + dealcid + '/import/' + str(importnum))
+            self.annex.seturimissing(key, 'filecoin://' + provider + '/' + datacid + '/' + dealcid + '/import/' + str(importnum))
         return deal
 
 
@@ -584,7 +586,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
     def remove(self, key):
         for url in self.annex.geturls(key, 'filecoin://' + self.miner + '/'):
             try:
-                dealcid, state, id = url.split('/')[3:]
+                dealcid, state, id = url.split('/')[-3:]
                 if state == 'import':
                     self._run('lotus', 'client', 'drop', id)
             finally:
