@@ -118,6 +118,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
             'addr': "Specify non-default address to fund deals with.",
             'key': "Specify a private key to import to lotus to use.",
             'days': "How long the miner should store the data for in days. Usual range: 180 - 538",
+            'price': "Specify a manual FIL-per-GiB-epoch to pay the miner.",
             #'token':    "Token file that was created by `git-annex-remote-googledrive setup`",
             #'auto_fix_full':    "`yes` if the remote should try to fix full-folder issues"
             #                    " automatically. See https://github.com/Lykos153/git-annex-remote-googledrive#fix-full-folder",
@@ -288,7 +289,14 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
 
     @property
     def price_GiB(self):
-        return self.ask['verified_price' if self.verified else 'unverified_price']
+        if not hasattr(self, '_price'):
+            self._price = self.annex.getconfig('price')
+            if not self._price:
+                if self.verified:
+                    self._price = self.ask['verified_price']
+                else:
+                    self._price = self.ask['unverified_price']
+        return self._price
 
     @property
     def minsize(self):
