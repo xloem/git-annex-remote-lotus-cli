@@ -389,6 +389,8 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         #    self._info("Read more on https://github.com/Lykos153/git-annex-remote-googledrive#google-drive-api-lockdown")
         #    self._info("You can mute this warning by issuing 'git annex enableremote <remote-name> mute-api-lockdown-warning=true'")
         #    self._info("======")
+        self._info("If you have software development experience, help is needed with git-annex-remote-lotus-cli.")
+        self._info("See https://github.com/xloem/git-annex-remote-lotus-cli .")
 
     @send_version_on_error
     @retry(**retry_conditions)
@@ -402,6 +404,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
                     '--cid-base=base64url',
                     fpath
                 ).split(', '))
+            datacid = multibase.encode('base64url', multibase.decode(datacid)).decode()
 
             self._info('Imported as ' + importnum + ' ' + datacid)
 
@@ -570,8 +573,8 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         if dealinfo['DealID']:
             dealid = dealinfo['DealID']
             provider = dealinfo['Provider']
-            datacid = getdeal['OnChain']['Proposal']['Label']
-            datacid = multibase.encode('base64url', multibase.decode(label))
+            datacid = deal['OnChain']['Proposal']['Label']
+            datacid = multibase.encode('base64url', multibase.decode(datacid)).decode()
             self.annex.seturipresent(key, 'filecoin://' + provider + '/' + datacid + '/' + dealcid + '/onchain/' + str(dealid))
             try:
                 self._run('lotus', 'client', 'drop', str(importnum))
