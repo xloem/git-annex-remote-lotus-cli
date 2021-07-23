@@ -671,3 +671,71 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
             self.annex.info(message)
         except ProtocolError:
             print(message, file=sys.stderr)
+
+    def _keysize(self, key):
+        """
+        Calculates the size in bytes of the data chunk represented by a git-annex key.
+
+        Parameters
+        ----------
+        key : str
+
+        Returns
+        -------
+        Union(int, None)
+            The size in bytes parsed from the key.
+            For chunked keys, this is the size of the passed chunk, not the whole file.
+
+            A key may not include its size, in which case None is returned.
+
+        Raises
+        ------
+        RemoteError
+            If the key could not be parsed.
+        """
+        try:
+            # name
+            keyparts, keyname = key.split('--', 1)
+
+            keyparts = key.split('-')
+
+            # chunking
+            if len(keyparts) > 2 and keyparts[-1].startswith('C') and keyparts[-2].startswith('S'):
+                chunk = int(keyparts.pop()[1:])
+                chunksize = int(keyparts.pop()[1:])
+            else:
+                chunk = 1
+                chunksize = None
+
+            # mtime
+            if keyparts and keyparts[-1].startswith('m'):
+                keyparts.pop()
+            
+            # filesize
+            if keyparts and keyparts[-1].startswith('s'):
+                bytesize = int(keyparts.pop()[1:])
+            else:
+                bytesize = None
+
+            # backend
+            backend = keyparts.pop()
+        except ValueError:
+            raise RemoteError('bad key: ' + key)
+
+        if len(keyparts):
+            raise RemoteError('bad key: ' + key)
+
+        if chunksize:
+            if bytesize:
+                # if this is the last chunk, the size may be truncated
+                if chunk * chunksize > bytesize:
+                    if chunk * chunksize >= bytesize + chunksize:
+                        raise RemoteError('bad key: ' + key)
+                    return bytesize % chunksize
+                else:
+                    return chunksize
+            else:
+                # can't tell whether the size is truncated without the full size
+                return None
+        else:
+            return bytesize
