@@ -8,12 +8,14 @@
 import os, decimal, traceback, subprocess, sys, time, tempfile
 import json
 from pathlib import Path
+from datetime import datetime
 from dateutil.parser import isoparse
 
 
 from . import __version__
 from . import __name__ as MODULENAME
 from annexremote import __version__ as annexremote_version
+from .annexremote_key import Key
 #from drivelib import __version__ as drivelib_version
 #from . import _default_client_id as DEFAULT_CLIENT_ID
 
@@ -114,10 +116,12 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
             #            " Default: {}".format(self.DEFAULT_CHUNKSIZE),
             #'mute-api-lockdown-warning':
             #            "Set to 'true' if you don't want to see the warning.",
-            'verified': "Set to 'true' or 'yes' if you want to use verified deals.",
+            'verified': "Specify whether you want to use verified deals."
+                        " Default: true if it lowers the price to 0",
             'addr': "Specify non-default address to fund deals with.",
             'key': "Specify a private key to import to lotus to use.",
             'days': "How long the miner should store the data for in days. Usual range: 180 - 538",
+            'delay': "How many days to wait before storage deals act.  The default is 8.",
             'price': "Specify a manual FIL-per-GiB-epoch to pay the miner.",
             #'token':    "Token file that was created by `git-annex-remote-googledrive setup`",
             #'auto_fix_full':    "`yes` if the remote should try to fix full-folder issues"
@@ -205,12 +209,23 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         if not hasattr(self, '_duration'):
             days = self.annex.getconfig('days')
             if not days:
+                days = self.annex.getconfig('duration')
+            if not days:
                 #self._duration = 518400 # minimum, 180 days
                 #self._duration = 1555200 # maximum, 540 days
                 self._duration = decimal.Decimal(530 * 24 * 60 * 2) # 530 days
             else:
                 self._duration = decimal.Decimal(days) * 24 * 60 * 2
         return self._duration
+
+    @property
+    def delay(self):
+        if not hasattr(self, '_delay'):
+            days = self.annex.getconfig('delay')
+            if not days:
+                days = 8
+            self._delay = decimal.Decimal(days) * 24 * 60 * 2
+        return self._delay
 
     #@property
     #def local_appdir(self):
@@ -268,34 +283,51 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
     @property
     def verified(self):
         if not hasattr(self, '_verified'):
-            self._verified = (self.annex.getconfig('verified').lower() in ('true','yes','on'))
+            verified = self.annex.getconfig('verified').lower()
+            if verified == '':
+                self._verified = self.ask['verified_price'] == '0 FIL' and self.ask['unverified_price'] != '0 FIL'
+            elif verified in ('true','yes','on','1','y','t'):
+                self._verified = True
+            elif verified in ('false','no','off','0','n','f'):
+                self._verified = False
+            else:
+                raise RemoteError('failed to parse verified boolean')
+
         return self._verified
 
     @property
     def ask(self):
         if not hasattr(self, '_ask'):
-            lines = self._run('lotus', 'client', 'query-ask', self.miner).split('\n')
-            values = [line.split(': ')[1] for line in lines]
-            if len(values) != 5 or values[0] != self.miner:
-                raise RemoteError('unexpected ask output', *lines)
-            self._ask = {
-                'ask': values[0],
-                'unverified_price': values[1],
-                'verified_price': values[2],
-                'maxsize': humanfriendly.parse_size(values[3]),
-                'minsize': humanfriendly.parse_size(values[4])
-            }
+            minerask = self.annex.getconfig('miner-ask')
+            if not minerask:
+                queryask = self._run('lotus', 'client', 'query-ask', self.miner)
+                lines = queryask.split('\n')
+                values = [line.split(': ')[1] for line in lines]
+                if len(values) != 5 or values[0] != self.miner:
+                    raise RemoteError('unexpected ask output', *lines)
+                self._ask = {
+                    'ask': values[0],
+                    'unverified_price': values[1],
+                    'verified_price': values[2],
+                    'maxsize': humanfriendly.parse_size(values[3]),
+                    'minsize': humanfriendly.parse_size(values[4])
+                }
+                self.annex.setconfig('miner-ask', json.dumps(self._ask))
+            else:
+                self._ask = json.loads(minerask)
         return self._ask
 
     @property
-    def price_GiB(self):
+    def price_GiB_epoch(self):
         if not hasattr(self, '_price'):
-            self._price = self.annex.getconfig('price')
-            if not self._price:
+            price = self.annex.getconfig('price')
+            if not price:
                 if self.verified:
-                    self._price = self.ask['verified_price']
+                    self._price = self.ask['verified_price'].split(' ', 1)
                 else:
-                    self._price = self.ask['unverified_price']
+                    self._price = self.ask['unverified_price'].split(' ', 1)
+            else:
+                self._price = (str(price), 'FIL')
         return self._price
 
     @property
@@ -339,6 +371,9 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         key = self.annex.getconfig('key') or self.key
         self.annex.setconfig('addr', '')
         self.annex.setconfig('key', '')
+
+        self._info('Querying miner ask ...')
+        self._info('price/GiB = ' + format(decimal.Decimal(self.price_GiB_epoch[0]) * self.duration, 'f') + ' minsize = ' + str(self.minsize) + ' B maxsize = ' + str(self.maxsize) + ' B')
 
         if not key:
             if not addr:
@@ -403,10 +438,11 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
     @send_version_on_error
     @retry(**retry_conditions)
     def transfer_store(self, key, fpath):
+        key = Key(key, self)
         #fpath = Path(fpath)
         importnum, datacid, dealcid = None,None,None
         try:
-            self._info('Importing ' + key + ' ...')
+            self._info('Importing ' + str(key) + ' ...')
             importnum, datacid = (item.split(' ')[1] for item in self._run(
                     'lotus', 'client', 'import',
                     '--cid-base=base64url',
@@ -419,26 +455,33 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
             stat = self._run('lotus', 'client', 'stat', datacid).split('\n')
             piece_size, payload_size = [line.split(':', 1)[1] for line in stat]
 
-            total_price, total_units = self.price_GiB.split(' ')
+            total_price, total_units = self.price_GiB_epoch
             total_price = (
                     decimal.Decimal(total_price) *
                     self.duration *
                     humanfriendly.parse_size(piece_size) / 1024 / 1024 / 1024
                 )
 
+            tipEpoch = self._run('lotus', 'chain', 'list', '--count=1').split(':',1)[0]
+
+            delayEpochs = self.delay
+            startEpoch = delayEpochs + int(tipEpoch)
+
             self._info('Piece size = ' + piece_size.strip() +
-                       '  Duration = ' + str(self.duration / 24 / 60 / 2) + ' days' +
-                       '  Price = ' + str(total_price) + ' ' + total_units)
+                       '  Start = '  + datetime.fromtimestamp(time.time() + float(delayEpochs) * 30).isoformat(timespec='minutes') + 
+                       '  Duration = ' + format(self.duration / 24 / 60 / 2, 'f') + ' days' +
+                       '  Price = ' + format(total_price, 'f') + ' ' + total_units)
             
             self._info('Opening a deal ...')
             dealcid = self._run(
                 'lotus', 'client', 'deal',
                 '--verified-deal=' + str(self.verified).lower(),
-                '--cid-base=base64url',
+                '--cid-base', 'base64url',
+                '--start-epoch', str(int(startEpoch)),
                 '--from', self.addr,
-                datacid, self.miner, self.price_GiB, str(self.duration)
+                datacid, self.miner, self.price_GiB_epoch[0], str(self.duration)
             )
-            self.annex.seturipresent(key, 'filecoin://' + self.miner + '/' + datacid + '/' + dealcid + '/import/' + importnum)
+            key.uris().add('filecoin://' + self.miner + '/' + datacid + '/' + dealcid + '/import/' + importnum)
         except:
             if importnum is not None:
                 self._info('Unimporting ' + importnum + '.')
@@ -448,7 +491,8 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
         lastmsg = None
         lastlog = isoparse('0001-01-01T00:00:00Z')
         lastlogmsg = None
-        while True:
+        uploaded = False
+        while not uploaded:
             getdeal = self._dealfromcid(key, dealcid, importnum)
             dealinfo = getdeal['DealInfo: ']
             if dealinfo['DealID']:
@@ -479,9 +523,12 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
                                 lastlogmsg = log['Log']
                                 self._info(log['Log'])
                                 lastlog = updatedtime
+                if stage['Name'] == 'StorageDealCheckForAcceptance':
+                    uploaded = True
+
     
             if state == 26: # StorageDealError
-                self.annex.seturimissing(key, 'filecoin://' + self.miner + '/' + datacid + '/' + dealcid + '/import/' + importnum)
+                key.uris().discard('filecoin://' + self.miner + '/' + datacid + '/' + dealcid + '/import/' + importnum)
                 self._info('Unimporting ' + importnum + '.')
                 self._info(self._run('lotus', 'client', 'drop', importnum))
                 raise RemoteError(msg)
@@ -500,9 +547,10 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
     @send_version_on_error
     @retry(**retry_conditions)
     def transfer_retrieve(self, key, fpath):
+        key = Key(key, self)
         # can also retrieve from local
-        for url in self.annex.geturls(key, 'filecoin://' + self.miner + '/'):
-            dealcid, state, id = url.split('/')[-3:]
+        for uri in key.uris('filecoin://' + self.miner + '/'):
+            dealcid, state, id = uri.split('/')[-3:]
             if state != 'onchain':
                 continue
             deal = json.loads(self._run('lotus', 'state', 'get-deal', id))
@@ -540,16 +588,17 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
     @send_version_on_error
     @retry(**retry_conditions)
     def checkpresent(self, key):
+        key = Key(key, self)
         results = []
-        for url in self.annex.geturls(key, 'filecoin://' + self.miner + '/'):
-            dealcid, state, id = url.split('/')[-3:]
+        for uri in key.uris('filecoin://' + self.miner + '/'):
+            dealcid, state, id = uri.split('/')[-3:]
             if state == 'onchain':
                 try:
                     deal = json.loads(self._run('lotus', 'state', 'get-deal', id))
                 except subprocess.CalledProcessError as err:
                     self._info(err.stdout.decode())
                     self._info(err.stderr.decode())
-                    #self.annex.seturimissing('deal') should be url not 'deal'
+                    #self.annex.seturimissing('deal') should be uri not 'deal'
                     continue
                 proposal = deal['Proposal']
                 provider = proposal['Provider']
@@ -561,7 +610,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
                 epoch = int(epoch)
                 if (startepoch + endepoch) / 2 > epoch:
                     results.append({
-                        'url': url,
+                        'url': uri,
                         'size': proposal['PieceSize'],
                         'filename': proposal['Label']
                     })
@@ -570,9 +619,12 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
                 dealinfo = deal['DealInfo: ']
                 if dealinfo['DealID'] and dealinfo['Provider'] == self.miner:
                     results.append({
-                        'url': url,
+                        'url': uri,
                         'size': deal['OnChain']['Proposal']['PieceSize']
                     })
+                else:
+                    stage = dealinfo['DealStages']['Stages'][-1]
+                    self._info(stage['Description'] + ': ' + stage['Logs'][-1]['Log'])
         return results
 
     def _dealfromcid(self, key, dealcid, importnum):
@@ -583,25 +635,26 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
             provider = dealinfo['Provider']
             datacid = deal['OnChain']['Proposal']['Label']
             datacid = multibase.encode('base64url', multibase.decode(datacid)).decode()
-            self.annex.seturipresent(key, 'filecoin://' + provider + '/' + datacid + '/' + dealcid + '/onchain/' + str(dealid))
+            key.uris().add('filecoin://' + provider + '/' + datacid + '/' + dealcid + '/onchain/' + str(dealid))
             try:
                 self._run('lotus', 'client', 'drop', str(importnum))
             except:
                 pass
-            self.annex.seturimissing(key, 'filecoin://' + provider + '/' + datacid + '/' + dealcid + '/import/' + str(importnum))
+            key.uris().discard('filecoin://' + provider + '/' + datacid + '/' + dealcid + '/import/' + str(importnum))
         return deal
 
 
     @send_version_on_error
     @retry(**retry_conditions)
     def remove(self, key):
-        for url in self.annex.geturls(key, 'filecoin://' + self.miner + '/'):
+        key = Key(key, self)
+        for uri in key.uris('filecoin://' + self.miner + '/'):
             try:
-                dealcid, state, id = url.split('/')[-3:]
+                dealcid, state, id = uri.split('/')[-3:]
                 if state == 'import':
                     self._run('lotus', 'client', 'drop', id)
             finally:
-                self.annex.seturimissing(key, url)
+                key.uris().discard(uri)
 
     #    self.root.delete_key(key)
 
@@ -679,71 +732,3 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
             self.annex.info(message)
         except ProtocolError:
             print(message, file=sys.stderr)
-
-    def _keysize(self, key):
-        """
-        Calculates the size in bytes of the data chunk represented by a git-annex key.
-
-        Parameters
-        ----------
-        key : str
-
-        Returns
-        -------
-        Union(int, None)
-            The size in bytes parsed from the key.
-            For chunked keys, this is the size of the passed chunk, not the whole file.
-
-            A key may not include its size, in which case None is returned.
-
-        Raises
-        ------
-        RemoteError
-            If the key could not be parsed.
-        """
-        try:
-            # name
-            keyparts, keyname = key.split('--', 1)
-
-            keyparts = key.split('-')
-
-            # chunking
-            if len(keyparts) > 2 and keyparts[-1].startswith('C') and keyparts[-2].startswith('S'):
-                chunk = int(keyparts.pop()[1:])
-                chunksize = int(keyparts.pop()[1:])
-            else:
-                chunk = 1
-                chunksize = None
-
-            # mtime
-            if keyparts and keyparts[-1].startswith('m'):
-                keyparts.pop()
-            
-            # filesize
-            if keyparts and keyparts[-1].startswith('s'):
-                bytesize = int(keyparts.pop()[1:])
-            else:
-                bytesize = None
-
-            # backend
-            backend = keyparts.pop()
-        except ValueError:
-            raise RemoteError('bad key: ' + key)
-
-        if len(keyparts):
-            raise RemoteError('bad key: ' + key)
-
-        if chunksize:
-            if bytesize:
-                # if this is the last chunk, the size may be truncated
-                if chunk * chunksize > bytesize:
-                    if chunk * chunksize >= bytesize + chunksize:
-                        raise RemoteError('bad key: ' + key)
-                    return bytesize % chunksize
-                else:
-                    return chunksize
-            else:
-                # can't tell whether the size is truncated without the full size
-                return None
-        else:
-            return bytesize
