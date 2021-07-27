@@ -560,7 +560,7 @@ class LotusCliRemote(annexremote.SpecialRemote):#ExportRemote):
             tempd = tempfile.mkdtemp()
             try:
                 os.chmod(tempd, 0o733)
-                tempfn = os.path.join(tempd, key)
+                tempfn = os.path.join(tempd, str(key))
     
                 retrparams = ['lotus', 'client', 'retrieve']
                 if self.addr:
